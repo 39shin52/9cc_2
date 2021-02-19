@@ -30,7 +30,7 @@ int main(int argc, char **argv){
             continue;
         }
 
-        fprintf(stderr, "予測しない文字です: '%c", *p);
+        fprintf(stderr, "予期しない文字です: '%c'\n", *p);
         return 1;
     }
 
