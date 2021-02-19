@@ -11,25 +11,26 @@ typedef enum{
 	TK_RESERVED, // 記号
 	TK_NUM,      // 整数トークン
 	TK_EOF,      // 入力の終わりを表すトークン
+	TK_RETURN,
+	TK_IDENT,
 } TokenKind;
 
 typedef enum{
-	ND_ADD, // +
-	ND_SUB, // -
-	ND_MUL, // *
-	ND_DIV, // /
-	ND_NUM, //整数
-	ND_EQ,  // ==
-	ND_NE,  // !=
-	ND_LT,  // <=
-	ND_LE,  // >=
+	ND_ADD,		// +
+	ND_SUB, 	// -
+	ND_MUL, 	// *
+	ND_DIV, 	// /
+	ND_ASSIGN,	// =
+	ND_LVAR,	// ローカル変数
+	ND_NUM,		// 整数
+	ND_RETURN,
 } NodeKind;
 
 typedef struct Token Token;
 typedef struct Node Node;
+typedef struct LVar LVar;
 
 // トークン型
-
 struct Token{
 	TokenKind kind; // トークンの型
 	Token *next;    // 次のトークン
@@ -38,13 +39,25 @@ struct Token{
 	int len;
 };
 
+// 抽象構文木のノード 
 struct Node{
 	NodeKind kind;  // ノードの型
 	Node *lhs;      // 左辺
 	Node *rhs;      // 右辺
 	int val;        // kindがND_NUMのときにのみ使う
+	int offset;		// kindがND_LVARの時のみ使う
 };
 
+// ローカル変数の型
+struct LVar {
+	LVar *next;		//次の変数がNULL
+	char *name;		// 変数の名前
+	int len;		// 名前の長さ
+	int offset;		// RBPからのオフセット
+};
+
+// ローカル変数
+LVar *locals;
 
 // 現在注目しているトークン
 Token *token;
@@ -74,6 +87,8 @@ Node *unary();
 Node *equality();
 Node *relational();
 Node *add();
+Node *assign();
+Node *stmt();
 
 // エラー箇所を報告する
 void error_at(char *loc, char *fmt, ...){
@@ -126,6 +141,10 @@ int expect_number(){
 bool at_eof(){
 	return token->kind == TK_EOF;
 }
+
+int is_alnum(char c){
+	return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9') || (c == '_');
+}
 	
 // 新しいtokenを作成してcurにつなげる
 Token *new_token(TokenKind kind, Token *cur, char *str, int len){
@@ -160,6 +179,14 @@ Token *tokenize(){
 		//	continue;
 		//}
 
+		/*if (strncmp(p, "return", 6) == 0 && !is_alnum(p[6])){
+			token[i].ty = TK_RETURN;
+			token[i].str = p;
+			i++;
+			p += 6;
+			continue;
+		}*/
+
 		if(startswith(p, "==") || startswith(p, "!=") ||
 				startswith(p, "<=") || startswith(p, ">=")){
 			cur = new_token(TK_RESERVED, cur, p, 2);
@@ -171,7 +198,13 @@ Token *tokenize(){
 				cur = new_token(TK_RESERVED, cur, p++, 1);
 				continue;
 		}
-		
+
+		if('a' <= *p && *p <= 'z'){
+			cur = new_token(TK_IDENT, cur, p++, 1);
+			cur->len = 1;
+			continue;
+		}
+
 		if(isdigit(*p)){
 			cur = new_token(TK_NUM, cur, p, 0);
 			char *q = p;
@@ -187,7 +220,22 @@ Token *tokenize(){
 	return head.next;
 }
 
+// 変数を名前で検索する。見つからなかった場合はNULLを返す
+LVar *find_lvar(Token *tok){
+	for(LVar *var = locals; var; var = var->next){
+		if(var->len == tok->len && !memcmp(tok->str, var->name, var->len)) return var;
+	}
+	return NULL;
+}
+
 // パーサ
+Node *code[100];
+
+Node *assign(){
+	Node *node = equality();
+	if(consume("=")) node = new_node(ND_ASSIGN, node, assign());
+	return node;
+}
 Node *expr(){
 	/*Node *node = mul();
 
@@ -196,7 +244,32 @@ Node *expr(){
 		else if (consume('-')) node = new_node(ND_SUB, node, mul());
 		else return node;
 	}*/
-	return equality();
+	//return equality();
+	return assign();
+}
+Node *stmt(){
+	//Node *node = expr();
+	Node *node;
+	//expect(;);
+	if(consume(TK_RETURN)){
+		node = calloc(1, sizeof(Node));
+		node->kind = ND_RETURN;
+		node->lhs = expr();
+	} else {
+		node = expr();
+	}
+
+	/*if(consume(';')) {
+		error_at(tokens[pos].str, "';'ではないトークンです");
+	}*/
+	
+	return node;
+}
+
+void program(){
+	int i = 0;
+	while(!at_eof()) code[i++] = stmt();
+	code[i] = NULL;
 }
 Node *equality(){
 	Node *node = relational();
@@ -220,15 +293,13 @@ Node *relational(){
 }
 Node *add(){
 	Node *node = mul();
-
+	
         	for(;;){
                 	if(consume("+")) node = new_node(ND_ADD, node, mul());
                 	else if (consume("-")) node = new_node(ND_SUB, node, mul());
                 	else return node;
         	}
 }
-
-
 Node *mul(){
 	Node *node = unary();
 
@@ -247,6 +318,25 @@ Node *primary(){
 	}
 	// そうでなければ数値のはず
 	return new_node_num(expect_number());
+
+	Token *tok = consume_ident();
+	if(tok) {
+		Node *node = calloc(1, sizeof(Node));
+		node->kind = ND_LVAR;
+		// node->offset = (tok->str[0] - 'a' + 1) * 8;
+		LVar *lvar = find_lvar(tok);
+		if(lvar){
+			node->offset =lvar->offset;
+		} else {
+			lvar->next = locals;
+			lvar->name = tok->str;
+			lvar->len = tok->len;
+			lvar->offset = locals->offset + 8;
+			node->offset = lvar->offset;
+			locals = lvar;
+		}
+		return node;
+	}
 }
 Node *unary(){
 	if(consume("+")) return primary();
@@ -255,10 +345,47 @@ Node *unary(){
 }
 
 // スタックマシン
+void gen_lval(Node *node) {
+	if(node->kind != ND_LVAR) error("代入の左辺値が変数ではありません");
+
+	printf(" mov rax, rbp\n");
+	printf(" sub rax %d\n", node->offset);
+	printf(" push rax\n");
+}
+
 void gen(Node *node){
-	if(node->kind == ND_NUM){
+	/*if(node->kind == ND_NUM){
 		printf(" push %d\n", node->val);
 		return;
+	}*/
+
+	if(node->kind == ND_RETURN){
+		gen(node->lhs);
+		printf(" pop rax\n");
+		printf(" mov rspm, rbp\n");
+		printf(" pop rbp\n");
+		printf(" ret\n");
+		return;
+	}
+
+	switch(node->kind){
+		case ND_NUM:
+			printf(" push %d\n", node->val);
+			return;
+		case ND_LVAR:
+			printf(" pop rax\n");
+			printf(" mov rax, [rax]\n");
+			printf(" push rax\n");
+			return;
+		case ND_ASSIGN:
+			gen_lvar(node->lhs);
+			gen(node->rhs);
+			
+			printf(" pop rdi\n");
+			printf(" pop rax\n");
+			printf(" mov [rax], rdi\n");
+			printf(" push rdi\n");
+			return;
 	}
 
 	gen(node->lhs);
@@ -267,7 +394,7 @@ void gen(Node *node){
 	printf(" pop rdi\n");
 	printf(" pop rax\n");
 
-	switch (node->kind) {
+	/*switch (node->kind) {
 		case ND_ADD:
 			printf(" add rax, rdi\n");
 			break;
@@ -302,7 +429,21 @@ void gen(Node *node){
 			printf(" movzb rax, al\n");
 			break;
 	}
-
+	*/
+	switch(node->kind){
+		case '+':
+			printf(" add rax, rdi\n");
+			break;
+		case '-':
+			printf(" sub rax, rdi\n");
+			break;
+		case '*':
+			printf(" imul rax, rdi\n");
+			break;
+		case '/':
+			printf(" cqo\n");
+			printf(" idiv rdi\n");
+	}
 	printf(" push rax\n");
 }
 
@@ -316,13 +457,29 @@ int main(int argc, char **argv){
 	// トークナイズする
 	// token = tokenize(argv[1]);
 	user_input = argv[1];
-	token = tokenize(user_input);
-	Node *node =expr ();
+	token = tokenize();
+	// Node *node =expr ();
+	program();
 
 	// アセンブリ前半部分を入力
 	printf(".intel_syntax noprefix\n");
 	printf(".globl main\n");
 	printf("main:\n");
+
+	// プロローグ
+	// 変数26個分の領域を確保する
+	printf(" push rbp\n");
+	printf(" mov rbp, rsp\n");
+	printf(" sub rsp, 208\n");
+
+	// 先頭の式から順にコード生成
+	for(int i = 0; code[i]; i++){
+		gen(code[i]);
+
+		// 式の評価結果としてスタックにひとつの値が残っている
+		// はずなので、スタックが溢れないようにポップしていく
+		printf(" pop rax\n");
+	}
 
 	/*
 	// 式の最初は数でなければならないのでそれをチェックして
@@ -344,10 +501,12 @@ int main(int argc, char **argv){
 	*/
 
 	// 抽象構文木を下りながらコード生成
-	gen(node);
+	//gen(node);
 
+	// エピローグ
 	// スタックトップに式全体の値が残っているはずなので
 	// それをRAXにロードして関数からの返り値とする
+	printf("mov rsp, rbp\n");
 	printf(" pop rax\n");
 	printf(" ret\n");
 	return 0;
