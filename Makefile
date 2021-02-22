@@ -2,7 +2,7 @@ CFLAGS=-std=c11 -g -static
 
 comp: comp.c
 
-test: 9cc
+test: comp
 	./tester.sh
 
 clean:
